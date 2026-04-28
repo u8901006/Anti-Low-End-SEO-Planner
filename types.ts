@@ -1,4 +1,31 @@
 
+export interface SearchIntentAnalysis {
+  primaryIntent: string;
+  secondaryIntent: string;
+  userProblem: string;
+  funnelStage: string;
+  suggestedContentFormats: string[];
+  unsuitableFormats: string[];
+  longTailKeywords: string[];
+  ctaSuggestion: string;
+  titleSuggestions: string[];
+  serpFeaturePredictions: string[];
+}
+
+export interface GoogleQuestionsAnalysis {
+  subTopics: Array<{
+    topic: string;
+    relatedQuestions: string[];
+    importance: 'high' | 'medium' | 'low';
+  }>;
+  suggestedSections: Array<{
+    section: 'who' | 'what' | 'when' | 'where' | 'why' | 'whom' | 'whose' | 'how' | 'howmany' | 'howmuch';
+    topic: string;
+    questions: string[];
+  }>;
+  commonThemes: string[];
+}
+
 export interface ArticleOutline {
   suggestedTitles: string[];
   structure: OutlineNode[];
@@ -11,9 +38,9 @@ export interface ArticleOutline {
       aiPrompt: string;
     }>;
   };
-  faqs: Array<{ 
-    question: string; 
-    answer: string; 
+  faqs: Array<{
+    question: string;
+    answer: string;
     rationale: string;
   }>;
 }
@@ -36,7 +63,10 @@ export interface DraftAnalysis {
 
 export enum AppStep {
   SETUP,
+  INTENT_ANALYZING,
+  INTENT_RESULT,
+  QUESTIONS_INPUT,
   ANALYZING,
   OUTLINE_READY,
-  EDITOR // 使用者在此輸入內容並查看分析
+  EDITOR
 }
