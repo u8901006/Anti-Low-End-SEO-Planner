@@ -1,5 +1,5 @@
 
-import { ArticleOutline, DraftAnalysis, SearchIntentAnalysis, GoogleQuestionsAnalysis } from "../types";
+import { ArticleOutline, DraftAnalysis, SearchIntentAnalysis, GoogleQuestionsAnalysis, WritingTemplateId, TemplateRecommendation } from "../types";
 
 const API_KEY = process.env.API_KEY as string;
 const API_BASE = process.env.API_BASE as string;
@@ -21,7 +21,7 @@ async function chatCompletion(messages: ChatMessage[]): Promise<string> {
       model: MODEL,
       messages,
       temperature: 0.7,
-      max_tokens: 4096,
+      max_tokens: 16384,
     }),
   });
 
@@ -31,7 +31,12 @@ async function chatCompletion(messages: ChatMessage[]): Promise<string> {
   }
 
   const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? "";
+  const content = data.choices?.[0]?.message?.content ?? "";
+  const finishReason = data.choices?.[0]?.finish_reason ?? "";
+  if (!content && finishReason === "length") {
+    throw new Error("AI 回應被截斷（推理耗盡 token 配額），請重試或簡化關鍵詞。");
+  }
+  return content;
 }
 
 function extractJSON(text: string): string {
@@ -80,6 +85,58 @@ export class SEOAIService {
   "ctaSuggestion": "建議的 CTA 行動呼籲",
   "titleSuggestions": ["建議標題1", "建議標題2", "建議標題3", "建議標題4", "建議標題5"],
   "serpFeaturePredictions": ["預測 SERP 可能出現的搜尋功能，如精選摘要、地圖、影片等"]
+}
+
+語言：繁體中文。`;
+
+    const raw = await chatCompletion([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ]);
+
+    return JSON.parse(extractJSON(raw));
+  }
+
+  static async recommendTemplate(
+    intent: SearchIntentAnalysis
+  ): Promise<TemplateRecommendation> {
+    const systemPrompt = `你是一位 SEO 內容策略專家。請根據搜尋意圖分析結果，推薦最適合的寫作模板。
+
+可用模板（五選一）：
+
+A — 資訊解答型
+大綱：OOO 就是 XXX → 解答細節 1 → 解答細節 2 → 解答細節 3 → 解答細節 4
+適合：使用者問一個明確問題，需要直接、深入的解答。例如「什麼是 PTSD」
+
+B — 資訊解答型 2
+大綱：什麼是 OOO → 為什麼需要 OOO → OOO 的好處是什麼 → 怎麼做到 OOO
+適合：需要完整說明一個主題的來龍去脈。例如「EMDR 治療」
+
+C — 推薦列表型
+大綱：OOO 介紹 → OOO 挑選方法 → 推薦 1 → 推薦 2 → 推薦 3 → 推薦 N
+適合：商業調查型意圖，使用者想比較、找推薦。例如「台北身心科推薦」
+
+D — 流程步驟型
+大綱：什麼是 OOO → OOO 對我們有什麼好處 → 快速進入 OOO 的三個步驟 → 步驟 1 → 步驟 2 → 步驟 3
+適合：教學、操作指南、步驟說明。例如「冥想入門教學」
+
+E — 好處列點型
+大綱：什麼是 OOO → OOO 的好處是什麼 → 好處 1 → 好處 2 → 好處 3
+適合：吸引認知階段讀者，聚焦好處。例如「瑜伽的 5 個好處」
+
+請以純 JSON 格式回應，不要包含 markdown code block。`;
+
+    const userPrompt = `[搜尋意圖分析結果]
+主要意圖：${intent.primaryIntent}
+次要意圖：${intent.secondaryIntent}
+使用者問題：${intent.userProblem}
+漏斗階段：${intent.funnelStage}
+適合的內容形式：${intent.suggestedContentFormats.join("、")}
+
+請推薦最適合的寫作模板。輸出 JSON：
+{
+  "recommended": "A / B / C / D / E",
+  "reason": "簡短說明為什麼推薦這個模板（50 字以內）"
 }
 
 語言：繁體中文。`;

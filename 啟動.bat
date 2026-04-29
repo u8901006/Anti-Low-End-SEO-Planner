@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul 2>&1
 title SEO 基礎邏輯模擬器
 
@@ -33,3 +33,10 @@ echo.
 
 start http://localhost:3000
 call npx vite preview --port 3000 --host
+if errorlevel 1 (
+    echo.
+    echo [ERROR] 伺服器啟動失敗，嘗試使用 npm run dev...
+    echo.
+    call npm run dev
+)
+pause

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { AppStep, ArticleOutline, DraftAnalysis, SearchIntentAnalysis, GoogleQuestionsAnalysis } from './types';
+import { AppStep, ArticleOutline, DraftAnalysis, SearchIntentAnalysis, GoogleQuestionsAnalysis, WritingTemplateId, WRITING_TEMPLATES, TemplateRecommendation } from './types';
 import { SEOAIService } from './services/aiService';
 
 const INTENT_COLORS: Record<string, string> = {
@@ -72,6 +72,9 @@ const App: React.FC = () => {
   const [statusText, setStatusText] = useState('');
   const [progress, setProgress] = useState(0);
   const [isAnalyzingDraft, setIsAnalyzingDraft] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<WritingTemplateId | null>(null);
+  const [templateRecommendation, setTemplateRecommendation] = useState<TemplateRecommendation | null>(null);
+  const [isRecommendingTemplate, setIsRecommendingTemplate] = useState(false);
 
   const [liveStats, setLiveStats] = useState({
     words: 0, keywords: 0, density: 0,
@@ -148,6 +151,25 @@ const App: React.FC = () => {
     } finally {
       setIsAnalyzingQuestions(false);
     }
+  };
+
+  const goToTemplateSelection = async () => {
+    setStep(AppStep.TEMPLATE_SELECTION);
+    if (!templateRecommendation && intent) {
+      setIsRecommendingTemplate(true);
+      try {
+        const res = await SEOAIService.recommendTemplate(intent);
+        setTemplateRecommendation(res);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsRecommendingTemplate(false);
+      }
+    }
+  };
+
+  const confirmTemplateAndProceed = () => {
+    setStep(AppStep.QUESTIONS_INPUT);
   };
 
   const startOutlineAnalysis = async () => {
@@ -235,9 +257,10 @@ const App: React.FC = () => {
               <h3 className="text-lg font-black mb-4 flex items-center gap-2"><i className="fas fa-stream text-amber-300"></i> 完整流程</h3>
               <div className="space-y-3 text-sm text-slate-300 font-medium">
                 <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">1</span> 分析搜尋意圖</div>
-                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">2</span> 貼上 Google 相關問題，擷取子主題</div>
-                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">3</span> 生成 7W3H 大綱</div>
-                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">4</span> 進入寫作實驗室</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">2</span> 選擇寫作模板</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">3</span> 貼上 Google 相關問題，擷取子主題</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">4</span> 生成 7W3H 大綱</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">5</span> 進入寫作實驗室</div>
               </div>
             </div>
 
@@ -267,7 +290,7 @@ const App: React.FC = () => {
         </div>
         <div>
           <h2 className="text-2xl font-black text-slate-900 mb-2">
-            {step === AppStep.INTENT_ANALYZING ? '正在分析搜尋意圖...' : '正在生成三段式大綱...'}
+            {step === AppStep.INTENT_ANALYZING ? '正在分析搜尋意圖...' : '正在生成大綱...'}
           </h2>
           <p className="text-slate-400 font-medium animate-pulse">{statusText}</p>
         </div>
@@ -340,8 +363,110 @@ const App: React.FC = () => {
               <p className="text-amber-700 font-bold text-sm leading-relaxed">{intent?.ctaSuggestion}</p>
             </div>
 
-            <button onClick={() => setStep(AppStep.QUESTIONS_INPUT)} className="w-full py-5 bg-amber-600 text-white rounded-2xl font-black text-lg shadow-2xl hover:bg-amber-500 transition-all flex items-center justify-center gap-3">
-              <i className="fas fa-arrow-right"></i> 下一步：貼上 Google 相關問題
+            <button onClick={goToTemplateSelection} className="w-full py-5 bg-amber-600 text-white rounded-2xl font-black text-lg shadow-2xl hover:bg-amber-500 transition-all flex items-center justify-center gap-3">
+              <i className="fas fa-arrow-right"></i> 下一步：選擇寫作模板
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const TEMPLATE_ICONS: Record<WritingTemplateId, string> = {
+    A: 'fa-lightbulb',
+    B: 'fa-book-open',
+    C: 'fa-list-ol',
+    D: 'fa-shoe-prints',
+    E: 'fa-thumbs-up',
+  };
+
+  const TEMPLATE_COLORS: Record<WritingTemplateId, string> = {
+    A: 'bg-blue-500',
+    B: 'bg-indigo-500',
+    C: 'bg-purple-500',
+    D: 'bg-teal-500',
+    E: 'bg-amber-500',
+  };
+
+  const renderTemplateSelection = () => (
+    <div className="max-w-6xl mx-auto py-12 px-6 space-y-10">
+      <div className="bg-white rounded-[3rem] shadow-2xl overflow-hidden border border-slate-100">
+        <div className="bg-slate-900 p-10 text-white flex flex-col md:flex-row justify-between items-center gap-6">
+          <div className="space-y-1">
+            <h2 className="text-3xl font-black tracking-tight">選擇寫作模板</h2>
+            <p className="text-amber-400 font-bold text-sm">根據搜尋意圖「{intent?.primaryIntent}」推薦最適合的文章結構</p>
+          </div>
+          <button onClick={() => setStep(AppStep.INTENT_RESULT)} className="bg-slate-800 text-slate-400 px-6 py-4 rounded-2xl font-black">回到意圖分析</button>
+        </div>
+
+        <div className="p-12 space-y-10">
+          {templateRecommendation && (
+            <div className="bg-amber-50 p-8 rounded-[2.5rem] border-2 border-amber-200 space-y-4">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-magic text-amber-500 text-xl"></i>
+                <h3 className="font-black text-amber-800 text-lg">AI 推薦：{WRITING_TEMPLATES[templateRecommendation.recommended].name}</h3>
+              </div>
+              <p className="text-amber-700 text-sm leading-relaxed">{templateRecommendation.reason}</p>
+              <button
+                onClick={() => { setSelectedTemplate(templateRecommendation.recommended); }}
+                className={`mt-2 px-8 py-4 rounded-2xl font-black text-lg shadow-xl transition-all flex items-center gap-3 ${selectedTemplate === templateRecommendation.recommended ? 'bg-amber-600 text-white ring-4 ring-amber-200' : 'bg-white text-amber-700 border-2 border-amber-300 hover:bg-amber-50'}`}
+              >
+                <i className="fas fa-check-circle"></i>
+                {selectedTemplate === templateRecommendation.recommended ? '已選擇此模板' : '採用推薦模板'}
+              </button>
+            </div>
+          )}
+
+          {isRecommendingTemplate && (
+            <div className="bg-slate-50 p-8 rounded-[2.5rem] border border-slate-100 flex items-center justify-center gap-3">
+              <i className="fas fa-spinner fa-spin text-amber-500 text-xl"></i>
+              <span className="text-slate-500 font-bold">AI 正在分析最適合的寫作模板...</span>
+            </div>
+          )}
+
+          <div>
+            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-6"><i className="fas fa-th-large"></i> 五種寫作模板</h3>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
+              {(Object.values(WRITING_TEMPLATES)).map((tpl) => (
+                <div
+                  key={tpl.id}
+                  onClick={() => setSelectedTemplate(tpl.id)}
+                  className={`p-8 rounded-[2.5rem] border-2 cursor-pointer transition-all hover:shadow-lg ${
+                    selectedTemplate === tpl.id
+                      ? 'border-amber-400 bg-amber-50/50 shadow-xl ring-2 ring-amber-200'
+                      : 'border-slate-100 bg-white hover:border-amber-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 mb-4">
+                    <span className={`w-10 h-10 rounded-xl ${TEMPLATE_COLORS[tpl.id]} text-white flex items-center justify-center shrink-0`}>
+                      <i className={`fas ${TEMPLATE_ICONS[tpl.id]}`}></i>
+                    </span>
+                    <div>
+                      <h4 className="font-black text-slate-800">{tpl.name}</h4>
+                      <p className="text-xs text-slate-400">{tpl.description}</p>
+                    </div>
+                  </div>
+                  <div className="space-y-2 mt-4">
+                    {tpl.outline.map((item, i) => (
+                      <div key={i} className="flex gap-2 items-start text-xs">
+                        <span className="w-5 h-5 rounded bg-slate-100 text-slate-500 flex items-center justify-center shrink-0 text-[10px] font-black">{i + 1}</span>
+                        <span className="text-slate-600">{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex justify-center pt-4">
+            <button
+              onClick={confirmTemplateAndProceed}
+              disabled={!selectedTemplate}
+              className="px-16 py-5 bg-amber-600 text-white rounded-2xl font-black text-lg shadow-2xl hover:bg-amber-500 transition-all disabled:bg-slate-200 disabled:text-slate-400 flex items-center gap-3"
+            >
+              <i className="fas fa-arrow-right"></i>
+              {selectedTemplate ? `使用模板 ${selectedTemplate}，下一步：Google 相關問題` : '請先選擇一個寫作模板'}
             </button>
           </div>
         </div>
@@ -358,7 +483,7 @@ const App: React.FC = () => {
             <p className="text-amber-400 font-bold text-sm">貼上 Google「People Also Ask」問題，擷取子主題並歸類到 7W3H 結構</p>
           </div>
           <div className="flex gap-3">
-            <button onClick={() => setStep(AppStep.INTENT_RESULT)} className="bg-slate-800 text-slate-400 px-6 py-4 rounded-2xl font-black">回到意圖分析</button>
+            <button onClick={() => setStep(AppStep.TEMPLATE_SELECTION)} className="bg-slate-800 text-slate-400 px-6 py-4 rounded-2xl font-black">回到模板選擇</button>
           </div>
         </div>
 
@@ -496,7 +621,7 @@ const App: React.FC = () => {
             <p className="text-amber-400 font-bold text-sm">7W3H 框架 + 搜尋意圖 + 競爭分析</p>
           </div>
           <div className="flex gap-4">
-            <button onClick={() => setStep(AppStep.QUESTIONS_INPUT)} className="bg-slate-800 text-slate-400 px-6 py-4 rounded-2xl font-black">回到問題分析</button>
+            <button onClick={() => setStep(AppStep.QUESTIONS_INPUT)} className="bg-slate-800 text-slate-400 px-6 py-4 rounded-2xl font-black">回到問題輸入</button>
             <button onClick={() => setStep(AppStep.EDITOR)} className="bg-amber-500 text-white px-10 py-4 rounded-2xl font-black hover:bg-amber-400 shadow-xl transition-all">進入寫作實驗室</button>
           </div>
         </div>
@@ -690,6 +815,7 @@ const App: React.FC = () => {
         {step === AppStep.SETUP && renderSetup()}
         {(step === AppStep.INTENT_ANALYZING || step === AppStep.ANALYZING) && renderLoading()}
         {step === AppStep.INTENT_RESULT && renderIntentResult()}
+        {step === AppStep.TEMPLATE_SELECTION && renderTemplateSelection()}
         {step === AppStep.QUESTIONS_INPUT && renderQuestionsInput()}
         {step === AppStep.OUTLINE_READY && renderOutline()}
         {step === AppStep.EDITOR && renderEditor()}
