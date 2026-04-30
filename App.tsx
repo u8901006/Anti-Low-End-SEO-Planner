@@ -75,6 +75,8 @@ const App: React.FC = () => {
   const [selectedTemplate, setSelectedTemplate] = useState<WritingTemplateId | null>(null);
   const [templateRecommendation, setTemplateRecommendation] = useState<TemplateRecommendation | null>(null);
   const [isRecommendingTemplate, setIsRecommendingTemplate] = useState(false);
+  const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
+  const [outlineCopied, setOutlineCopied] = useState(false);
 
   const [liveStats, setLiveStats] = useState({
     words: 0, keywords: 0, density: 0,
@@ -176,12 +178,12 @@ const App: React.FC = () => {
     setStep(AppStep.ANALYZING);
     try {
       const urls = competitors.split('\n').filter(u => u.trim() !== '').slice(0, 10);
-      const res = await SEOAIService.analyzeCompetitors(keywords, country, urls, intent ?? undefined, questionsAnalysis ?? undefined);
+      const res = await SEOAIService.analyzeCompetitors(keywords, country, urls, intent ?? undefined, questionsAnalysis ?? undefined, selectedTemplate ?? undefined);
       setOutline(res);
       setStep(AppStep.OUTLINE_READY);
-    } catch (e) {
-      console.error(e);
-      alert("大綱分析失敗，請檢查網路。");
+    } catch (e: any) {
+      console.error("analyzeCompetitors error:", e);
+      alert(`大綱分析失敗：${e?.message ?? e}`);
       setStep(AppStep.QUESTIONS_INPUT);
     }
   };
@@ -211,6 +213,70 @@ const App: React.FC = () => {
         await navigator.clipboard.writeText(editorRef.current.innerText);
       } catch { alert("複製失敗"); }
     }
+  };
+
+  const copyOutlineToClipboard = async () => {
+    if (!outline) return;
+    const lines: string[] = [];
+    lines.push(`# SEO 大綱：${keywords}`);
+    lines.push(``);
+    lines.push(`建議字數：${outline.targetWordCount}`);
+    lines.push(``);
+    for (const node of outline.structure) {
+      const prefix = node.level === 'H2' ? '##' : '###';
+      lines.push(`${prefix} ${node.title}`);
+      lines.push(`${node.description}`);
+      lines.push(``);
+    }
+    if (outline.faqs.length > 0) {
+      lines.push(`## FAQ`);
+      lines.push(``);
+      for (const f of outline.faqs) {
+        lines.push(`**Q: ${f.question}**`);
+        lines.push(`${f.answer}`);
+        lines.push(``);
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setOutlineCopied(true);
+      setTimeout(() => setOutlineCopied(false), 2000);
+    } catch { alert("複製失敗"); }
+  };
+
+  const handleGenerateArticle = async () => {
+    if (!outline) return;
+    setIsGeneratingArticle(true);
+    try {
+      const markdown = await SEOAIService.generateArticle(outline, keywords, intent ?? undefined);
+      setStep(AppStep.EDITOR);
+      setTimeout(() => {
+        if (editorRef.current) {
+          const html = markdownToHtml(markdown);
+          editorRef.current.innerHTML = html;
+          updateStats();
+        }
+      }, 100);
+    } catch (e) {
+      alert("AI 生成文章失敗，請重試。");
+    } finally {
+      setIsGeneratingArticle(false);
+    }
+  };
+
+  const markdownToHtml = (md: string): string => {
+    return md
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/^- (.+)$/gm, '<li>$1</li>')
+      .replace(/(<li>.*<\/li>\n?)+/g, (match) => `<ul>${match}</ul>`)
+      .replace(/\n{2,}/g, '</p><p>')
+      .replace(/^(?!<[hulo])/gm, '<p>')
+      .replace(/(?<![>])$/gm, '</p>')
+      .replace(/<p><\/p>/g, '');
   };
 
   const renderSetup = () => (
@@ -620,8 +686,14 @@ const App: React.FC = () => {
             <h2 className="text-3xl font-black tracking-tight">三段式大綱：{keywords}</h2>
             <p className="text-amber-400 font-bold text-sm">7W3H 框架 + 搜尋意圖 + 競爭分析</p>
           </div>
-          <div className="flex gap-4">
+          <div className="flex gap-4 flex-wrap">
             <button onClick={() => setStep(AppStep.QUESTIONS_INPUT)} className="bg-slate-800 text-slate-400 px-6 py-4 rounded-2xl font-black">回到問題輸入</button>
+            <button onClick={copyOutlineToClipboard} disabled={!outline} className="bg-emerald-600 text-white px-6 py-4 rounded-2xl font-black hover:bg-emerald-500 transition-all disabled:opacity-50">
+              <i className={`fas ${outlineCopied ? 'fa-check' : 'fa-clipboard'} mr-2`}></i>{outlineCopied ? '已複製 ✓' : '複製大綱'}
+            </button>
+            <button onClick={handleGenerateArticle} disabled={isGeneratingArticle || !outline} className="bg-violet-600 text-white px-6 py-4 rounded-2xl font-black hover:bg-violet-500 transition-all disabled:opacity-50">
+              <i className={`fas ${isGeneratingArticle ? 'fa-spinner fa-spin' : 'fa-robot'} mr-2`}></i>{isGeneratingArticle ? 'AI 生成中...' : 'AI 生成文章'}
+            </button>
             <button onClick={() => setStep(AppStep.EDITOR)} className="bg-amber-500 text-white px-10 py-4 rounded-2xl font-black hover:bg-amber-400 shadow-xl transition-all">進入寫作實驗室</button>
           </div>
         </div>

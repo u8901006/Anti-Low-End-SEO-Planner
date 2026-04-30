@@ -10,7 +10,7 @@ interface ChatMessage {
   content: string;
 }
 
-async function chatCompletion(messages: ChatMessage[]): Promise<string> {
+async function chatCompletion(messages: ChatMessage[], maxTokens: number = 16384): Promise<string> {
   const res = await fetch(`${API_BASE}/chat/completions`, {
     method: "POST",
     headers: {
@@ -21,7 +21,7 @@ async function chatCompletion(messages: ChatMessage[]): Promise<string> {
       model: MODEL,
       messages,
       temperature: 0.7,
-      max_tokens: 16384,
+      max_tokens: maxTokens,
     }),
   });
 
@@ -32,9 +32,14 @@ async function chatCompletion(messages: ChatMessage[]): Promise<string> {
 
   const data = await res.json();
   const content = data.choices?.[0]?.message?.content ?? "";
+  const reasoning = data.choices?.[0]?.message?.reasoning_content ?? "";
   const finishReason = data.choices?.[0]?.finish_reason ?? "";
+  console.log(`[AI] finish_reason=${finishReason}, content.length=${content.length}, reasoning.length=${reasoning.length}`);
   if (!content && finishReason === "length") {
     throw new Error("AI 回應被截斷（推理耗盡 token 配額），請重試或簡化關鍵詞。");
+  }
+  if (!content) {
+    throw new Error(`AI 回應為空（finish_reason=${finishReason}）。`);
   }
   return content;
 }
@@ -46,6 +51,7 @@ function extractJSON(text: string): string {
   if (firstBrace !== -1 && lastBrace !== -1) {
     return text.substring(firstBrace, lastBrace + 1);
   }
+  console.warn("[AI] extractJSON: no braces found, returning raw text length=", text.length);
   return text.trim();
 }
 
@@ -222,7 +228,8 @@ ${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}
     country: string,
     urls: string[],
     intent?: SearchIntentAnalysis,
-    questionsAnalysis?: GoogleQuestionsAnalysis
+    questionsAnalysis?: GoogleQuestionsAnalysis,
+    template?: WritingTemplateId
   ): Promise<ArticleOutline> {
     const systemPrompt = `你是一位頂尖的 SEO 內容策略專家。請以純 JSON 格式回應，不要包含 markdown code block 或任何多餘文字。
 
@@ -268,6 +275,10 @@ ${questionsAnalysis.suggestedSections.map(s => `  ${s.section}: ${s.questions.jo
 請將上述問題的分析結果融入大綱的 7W3H 結構中，確保每個段落都回答了對應的問題。`
       : "";
 
+    const templateContext = template
+      ? `\n[選定寫作模板]: ${template} — 請依據此模板的結構邏輯調整大綱章節排列。`
+      : "";
+
     const urlSection =
       urls.length > 0
         ? `[競爭對手網址]: ${urls.join("\n")}`
@@ -280,6 +291,7 @@ ${questionsAnalysis.suggestedSections.map(s => `  ${s.section}: ${s.questions.jo
 ${urlSection}
 ${intentContext}
 ${questionsContext}
+${templateContext}
 
 請輸出 JSON，結構如下：
 {
@@ -317,7 +329,7 @@ ${questionsContext}
     const raw = await chatCompletion([
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
-    ]);
+    ], 32768);
 
     return JSON.parse(extractJSON(raw));
   }
@@ -352,5 +364,53 @@ ${questionsContext}
     ]);
 
     return JSON.parse(extractJSON(raw));
+  }
+
+  static async generateArticle(
+    outline: ArticleOutline,
+    keywords: string,
+    intent?: SearchIntentAnalysis
+  ): Promise<string> {
+    const systemPrompt = `你是一位專業的 SEO 內容撰稿人。請根據提供的大綱逐段撰寫完整的繁體中文文章。
+
+規則：
+1. 嚴格按照大綱的 H2/H3 結構撰寫，每個章節都要展開成完整的段落
+2. 每個段落的引用資料、數據或研究出處，請用「資料來源：XXX」或「根據 XXX 研究」的格式標註
+3. 文章語氣專業但易讀，適合一般大眾閱讀
+4. 自然融入核心關鍵詞，避免過度堆砌
+5. 使用 Markdown 格式輸出（# / ## / ### 標題，**粗體**，*斜體*，- 列表）
+6. 章節之間用空行分隔
+7. 文章最後加上「參考資料」段落，列出所有引用出處`;
+
+    const intentContext = intent
+      ? `\n\n[搜尋意圖]: ${intent.primaryIntent} + ${intent.secondaryIntent}\n[目標讀者問題]: ${intent.userProblem}\n[建議 CTA]: ${intent.ctaSuggestion}`
+      : "";
+
+    const outlineStructure = outline.structure
+      .map((node) => `${node.level}: ${node.title}\n  描述：${node.description}\n  撰寫指引：${node.guidelines}`)
+      .join("\n\n");
+
+    const faqSection = outline.faqs
+      .map((f) => `Q: ${f.question}\nA: ${f.answer}`)
+      .join("\n\n");
+
+    const userPrompt = `請根據以下大綱撰寫完整的 SEO 文章。
+
+[核心關鍵詞]: ${keywords}
+[建議字數]: ${outline.targetWordCount}
+${intentContext}
+
+[文章大綱]:
+${outlineStructure}
+
+[FAQ 補充]:
+${faqSection}
+
+請直接輸出 Markdown 格式的完整文章，不需要額外說明。`;
+
+    return await chatCompletion([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ], 32768);
   }
 }
