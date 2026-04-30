@@ -1,7 +1,7 @@
 # HANDOFF — Anti-Low-End-SEO-Planner 開發交接文件
 
-> 最後更新：2026-04-29
-> 狀態：本地開發中（尚未推送）
+> 最後更新：2026-04-30
+> 狀態：已推送至 origin/main
 
 ---
 
@@ -86,6 +86,31 @@ VITE_GLM_API_BASE=https://open.bigmodel.cn/api/coding/paas/v4
 - 即時統計：字數、關鍵詞密度、閱讀時間
 - AI 草稿分析：契合度評分、缺失章節、優化建議
 
+### 7. 複製大綱到剪貼簿（2026-04-30 新增）
+
+- 大綱頁面新增「複製大綱」按鈕（綠色）
+- 將大綱結構格式化為 Markdown（H2/H3 + 描述 + FAQ）複製到剪貼簿
+- 複製後按鈕短暫顯示「已複製 ✓」（2 秒後恢復）
+
+### 8. AI 生成文章（2026-04-30 新增）
+
+- 大綱頁面新增「AI 生成文章」按鈕（紫色）
+- 呼叫 `SEOAIService.generateArticle()` API
+- AI 根據大綱逐段撰寫完整文章，每段標註引用出處（「資料來源：XXX」）
+- 文末附「參考資料」清單
+- 生成後自動切換到 EDITOR 步驟，文章填入 contentEditable Editor
+- Markdown 轉 HTML 填入（`markdownToHtml` 函式）
+
+### 9. 事實查核（2026-04-30 新增）
+
+- 寫作實驗室 toolbar 新增「事實查核」按鈕（紅色）
+- 呼叫 `SEOAIService.factCheckArticle()` API
+- AI 扮演獨立事實查核員，逐一驗證文章中的可驗證主張
+- 每個主張標示：✅ 正確 / ❌ 錯誤 / ⚠️ 誤導或缺乏脈絡 / 🔍 無證據待查
+- 禁止編造來源，找不到就明說
+- 輸出整體可信度評估 + 三個最需要修正的段落建議
+- 結果顯示在右側 sidebar，可滾動查看，附「複製報告」按鈕
+
 ---
 
 ## 完整流程（8 步）
@@ -135,8 +160,10 @@ Anti-Low-End-SEO-Planner/
 | `analyzeSearchIntent()` | 搜尋意圖分析 | keywords, country |
 | `recommendTemplate()` | 根據意圖推薦寫作模板 | intent (SearchIntentAnalysis) |
 | `analyzeGoogleQuestions()` | 問題子主題擷取 + 7W3H 歸類 | keywords, questions[] |
-| `analyzeCompetitors()` | 生成 7W3H 大綱 | keywords, country, urls[], intent?, questionsAnalysis? |
+| `analyzeCompetitors()` | 生成 7W3H 大綱 | keywords, country, urls[], intent?, questionsAnalysis?, template? |
 | `analyzeDraft()` | 草稿品質分析 | outline, draft, keywords |
+| `generateArticle()` | AI 根據大綱生成完整文章 | outline, keywords, intent? |
+| `factCheckArticle()` | 事實查核文章中的可驗證主張 | article, keywords |
 
 ---
 
@@ -168,6 +195,12 @@ npm run preview    # 預覽正式版
 - **根因：** GLM-5-Turbo 有推理模式（`reasoning_content`），會從 `max_tokens` 配額中消耗 tokens。原本 `max_tokens: 4096`，`analyzeCompetitors` 的複雜 prompt 讓推理階段耗盡配額，導致 `content` 為空字串 → `JSON.parse("")` 拋出 SyntaxError
 - **修正：** `max_tokens` 從 4096 → 16384；新增 `chatCompletion` 中 content 為空時的防禦性錯誤訊息
 
+### 10+ 競爭連結大綱分析失敗（已修正 2026-04-30）
+
+- **症狀：** 3 個競爭連結正常，10+ 個連結觸發「大綱分析失敗」
+- **根因：** 同上，GLM-5-Turbo `reasoning_content` 消耗 `max_tokens` 配額。10+ 連結讓 prompt 更長、推理更耗時，16384 不夠用
+- **修正：** `chatCompletion` 新增 `maxTokens` 參數（預設 16384），`analyzeCompetitors` 和 `generateArticle` 傳入 32768
+
 ---
 
 ## 技術債與未來方向
@@ -178,5 +211,5 @@ npm run preview    # 預覽正式版
 - [ ] 無單元測試
 - [ ] Tailwind 使用 CDN 版本（`cdn.tailwindcss.com`），正式部署應改為 build-time
 - [ ] `document.execCommand` 已 deprecated，Editor 未來應替換為 TipTap 或 ProseMirror
-- [ ] 選定的寫作模板（`selectedTemplate`）目前未傳入 `analyzeCompetitors`，大綱生成尚未依據模板調整結構
 - [ ] `.bat` 檔不可用 Edit/Write 工具修改（會破壞 UTF-8 BOM + CRLF 編碼），必須用 PowerShell 的 `[System.IO.File]::WriteAllText($path, $content, $utf8Bom)` 寫入
+- [x] ~~選定的寫作模板（`selectedTemplate`）目前未傳入 `analyzeCompetitors`，大綱生成尚未依據模板調整結構~~ （已修正 2026-04-30）

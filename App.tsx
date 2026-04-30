@@ -77,6 +77,8 @@ const App: React.FC = () => {
   const [isRecommendingTemplate, setIsRecommendingTemplate] = useState(false);
   const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
   const [outlineCopied, setOutlineCopied] = useState(false);
+  const [isFactChecking, setIsFactChecking] = useState(false);
+  const [factCheckResult, setFactCheckResult] = useState<string | null>(null);
 
   const [liveStats, setLiveStats] = useState({
     words: 0, keywords: 0, density: 0,
@@ -277,6 +279,29 @@ const App: React.FC = () => {
       .replace(/^(?!<[hulo])/gm, '<p>')
       .replace(/(?<![>])$/gm, '</p>')
       .replace(/<p><\/p>/g, '');
+  };
+
+  const handleFactCheck = async () => {
+    if (!editorRef.current) return;
+    const article = editorRef.current.innerText;
+    if (!article.trim()) return;
+    setIsFactChecking(true);
+    setFactCheckResult(null);
+    try {
+      const result = await SEOAIService.factCheckArticle(article, keywords);
+      setFactCheckResult(result);
+    } catch (e: any) {
+      alert(`事實查核失敗：${e?.message ?? e}`);
+    } finally {
+      setIsFactChecking(false);
+    }
+  };
+
+  const copyFactCheckToClipboard = async () => {
+    if (!factCheckResult) return;
+    try {
+      await navigator.clipboard.writeText(factCheckResult);
+    } catch { alert("複製失敗"); }
   };
 
   const renderSetup = () => (
@@ -794,6 +819,10 @@ const App: React.FC = () => {
               </div>
               <div className="flex-1"></div>
               <div className="flex gap-2">
+                <button onClick={handleFactCheck} disabled={isFactChecking} className="px-6 py-2 bg-red-600 text-white rounded-xl text-xs font-black shadow-lg hover:bg-red-700 disabled:opacity-50">
+                  <i className={`fas ${isFactChecking ? 'fa-spinner fa-spin' : 'fa-shield-alt'} mr-2`}></i>
+                  {isFactChecking ? '查核中...' : '事實查核'}
+                </button>
                 <button onClick={runDraftAnalysis} disabled={isAnalyzingDraft} className="px-6 py-2 bg-amber-600 text-white rounded-xl text-xs font-black shadow-lg hover:bg-amber-700 disabled:opacity-50">
                   <i className={`fas ${isAnalyzingDraft ? 'fa-spinner fa-spin' : 'fa-check-double'} mr-2`}></i>
                   {isAnalyzingDraft ? '分析中...' : '提交基礎分析'}
@@ -876,6 +905,32 @@ const App: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {isFactChecking && (
+            <div className="bg-red-50 p-8 rounded-[2.5rem] shadow-xl border-2 border-red-200 space-y-4">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-spinner fa-spin text-red-500 text-xl"></i>
+                <h4 className="font-black text-red-800">事實查核進行中...</h4>
+              </div>
+              <p className="text-xs text-red-600">AI 正在逐一驗證文章中的可驗證主張，請稍候。</p>
+            </div>
+          )}
+
+          {factCheckResult && !isFactChecking && (
+            <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-red-100 space-y-4">
+              <div className="flex items-center justify-between border-b pb-3">
+                <h4 className="font-black text-red-800 text-sm flex items-center gap-2">
+                  <i className="fas fa-shield-alt text-red-500"></i> 事實查核報告
+                </h4>
+                <button onClick={copyFactCheckToClipboard} className="px-4 py-1.5 bg-red-600 text-white rounded-lg text-[10px] font-black hover:bg-red-500">
+                  <i className="fas fa-clipboard mr-1"></i>複製報告
+                </button>
+              </div>
+              <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-[500px] overflow-y-auto">
+                {factCheckResult}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -413,4 +413,42 @@ ${faqSection}
       { role: "user", content: userPrompt },
     ], 32768);
   }
+
+  static async factCheckArticle(
+    article: string,
+    keywords: string
+  ): Promise<string> {
+    const systemPrompt = `請扮演獨立的事實查核員。閱讀提供的文章，找出最可能有誤或需要補充脈絡的「可驗證主張」（數字、日期、地點、人名職稱、引述、因果、研究結論）。
+
+對每個主張：
+1) 用可追溯的權威來源查證（優先 2025 年後的英文/國際來源：政府、國際組織、期刊、官方統計、主要媒體）
+2) 給出結論：✅ 正確 / ❌ 錯誤 / ⚠️ 誤導或缺乏脈絡 / 🔍 無證據待查
+3) 附上你實際用到的來源連結與引用重點
+
+嚴格規則：
+- 不得編造來源；找不到就明說「找不到權威來源」並建議該補什麼資訊才能查到
+- 如果文章中的主張是你知識庫中無法驗證的，明確標示「🔍 無證據待查」
+- 每個主張獨立評估，不要因為一個錯誤就全盤否定
+
+最後給出：
+- 整體可信度評估（高/中/低，附理由）
+- 三個最需要修正的段落建議
+
+輸出格式：Markdown，用標題和列表清楚結構化。語言：繁體中文。`;
+
+    const userPrompt = `以下是關於「${keywords}」的文章，請進行事實查核：
+
+---
+
+${article}
+
+---
+
+請逐一查核上述文章中的可驗證主張。`;
+
+    return await chatCompletion([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ], 16384);
+  }
 }
