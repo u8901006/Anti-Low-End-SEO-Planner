@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { AppStep, ArticleOutline, DraftAnalysis, SearchIntentAnalysis, GoogleQuestionsAnalysis, WritingTemplateId, WRITING_TEMPLATES, TemplateRecommendation } from './types';
+import { AppStep, ArticleOutline, DraftAnalysis, SearchIntentAnalysis, GoogleQuestionsAnalysis, WritingTemplateId, WRITING_TEMPLATES, TemplateRecommendation, SEOMetadata, ArticleGenerationProgress, ArticleGenerationCheckpoint, FAQGeneratorResult, SerpTemplateAnalysis, SerpTemplateType } from './types';
 import { SEOAIService } from './services/aiService';
 
 const INTENT_COLORS: Record<string, string> = {
@@ -14,6 +14,15 @@ const FUNNEL_COLORS: Record<string, string> = {
   '認知階段': 'bg-sky-100 text-sky-700',
   '考慮階段': 'bg-violet-100 text-violet-700',
   '決策階段': 'bg-emerald-100 text-emerald-700',
+};
+
+const SERP_TEMPLATE_META: Record<SerpTemplateType, { icon: string; color: string; desc: string }> = {
+  '問題資訊型': { icon: 'fa-book-open', color: 'bg-blue-500', desc: '文章、百科、知識頁' },
+  '策展排名型': { icon: 'fa-list-ol', color: 'bg-purple-500', desc: '排名推薦文、評比文' },
+  '產品分類型': { icon: 'fa-th-large', color: 'bg-green-500', desc: '電商分類頁、篩選頁' },
+  '單一產品型': { icon: 'fa-box-open', color: 'bg-orange-500', desc: '產品詳情頁' },
+  '首頁權威型': { icon: 'fa-building', color: 'bg-red-500', desc: '品牌官網首頁' },
+  '特殊功能型': { icon: 'fa-tools', color: 'bg-teal-500', desc: '工具頁、計算機、表格' },
 };
 
 const getIntentColor = (intent: string): string => {
@@ -49,7 +58,8 @@ const SECTION_LABELS: Record<string, { label: string; icon: string; color: strin
   howmuch: { label: 'How Much — 多少錢/預算',    icon: 'fa-dollar-sign',  color: 'bg-yellow-500',  keywords: ['多少錢','費用','預算','成本','價格','收費'] },
 };
 
-const detectSection = (title: string): string | null => {
+const detectSection = (title: string, aiSection?: string): string | null => {
+  if (aiSection && SECTION_LABELS[aiSection]) return aiSection;
   for (const [key, meta] of Object.entries(SECTION_LABELS)) {
     for (const kw of meta.keywords) {
       if (title.includes(kw)) return key;
@@ -76,9 +86,25 @@ const App: React.FC = () => {
   const [templateRecommendation, setTemplateRecommendation] = useState<TemplateRecommendation | null>(null);
   const [isRecommendingTemplate, setIsRecommendingTemplate] = useState(false);
   const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<ArticleGenerationProgress | null>(null);
+  const [seoMetadata, setSeoMetadata] = useState<SEOMetadata | null>(null);
+  const [generationCheckpoint, setGenerationCheckpoint] = useState<ArticleGenerationCheckpoint | null>(null);
   const [outlineCopied, setOutlineCopied] = useState(false);
   const [isFactChecking, setIsFactChecking] = useState(false);
   const [factCheckResult, setFactCheckResult] = useState<string | null>(null);
+
+  const [isGeneratingFAQ, setIsGeneratingFAQ] = useState(false);
+  const [faqResult, setFaqResult] = useState<FAQGeneratorResult | null>(null);
+  const [isAuditingUX, setIsAuditingUX] = useState(false);
+  const [uxResult, setUxResult] = useState<string | null>(null);
+  const [isAuditingContent, setIsAuditingContent] = useState(false);
+  const [contentResult, setContentResult] = useState<string | null>(null);
+  const [showExtendedFAQ, setShowExtendedFAQ] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+  const toggleCollapse = (id: string) => setCollapsedSections(prev => ({ ...prev, [id]: !prev[id] }));
+
+  const [serpTemplateResult, setSerpTemplateResult] = useState<SerpTemplateAnalysis | null>(null);
+  const [isAnalyzingSerpTemplate, setIsAnalyzingSerpTemplate] = useState(false);
 
   const [liveStats, setLiveStats] = useState({
     words: 0, keywords: 0, density: 0,
@@ -86,6 +112,7 @@ const App: React.FC = () => {
   });
 
   const editorRef = useRef<HTMLDivElement>(null);
+  const completedChaptersRef = useRef<string[]>([]);
 
   const updateStats = () => {
     if (!editorRef.current) return;
@@ -154,6 +181,23 @@ const App: React.FC = () => {
       alert("問題分析失敗，請重試。");
     } finally {
       setIsAnalyzingQuestions(false);
+    }
+  };
+
+  const goToSerpTemplate = async () => {
+    setStep(AppStep.SERP_TEMPLATE);
+    if (!serpTemplateResult && intent) {
+      setIsAnalyzingSerpTemplate(true);
+      try {
+        const res = await SEOAIService.analyzeSerpTemplate(keywords, country, intent);
+        setSerpTemplateResult(res);
+      } catch (e) {
+        console.error(e);
+        alert("SERP 模板分析失敗，請重試。");
+        setStep(AppStep.INTENT_RESULT);
+      } finally {
+        setIsAnalyzingSerpTemplate(false);
+      }
     }
   };
 
@@ -246,21 +290,49 @@ const App: React.FC = () => {
     } catch { alert("複製失敗"); }
   };
 
-  const handleGenerateArticle = async () => {
+  const handleGenerateArticle = async (resume: boolean = false) => {
     if (!outline) return;
     setIsGeneratingArticle(true);
+    if (!resume) {
+      setGenerationProgress(null);
+      setSeoMetadata(null);
+      setGenerationCheckpoint(null);
+      completedChaptersRef.current = [];
+    }
     try {
-      const markdown = await SEOAIService.generateArticle(outline, keywords, intent ?? undefined);
+      const checkpoint = resume ? generationCheckpoint ?? undefined : undefined;
+      if (resume && checkpoint) {
+        completedChaptersRef.current = [...(checkpoint.completedChapters)];
+      }
+      const result = await SEOAIService.generateArticle(
+        outline,
+        keywords,
+        intent ?? undefined,
+        (progress: ArticleGenerationProgress) => setGenerationProgress({ ...progress }),
+        checkpoint,
+        (idx: number, content: string) => {
+          completedChaptersRef.current.push(content);
+        }
+      );
+      setSeoMetadata(result.seoMetadata);
+      setGenerationCheckpoint(null);
+      completedChaptersRef.current = [];
       setStep(AppStep.EDITOR);
       setTimeout(() => {
         if (editorRef.current) {
-          const html = markdownToHtml(markdown);
+          const html = markdownToHtml(result.article);
           editorRef.current.innerHTML = html;
           updateStats();
         }
       }, 100);
-    } catch (e) {
-      alert("AI 生成文章失敗，請重試。");
+    } catch (e: any) {
+      if (completedChaptersRef.current.length > 0) {
+        setGenerationCheckpoint({
+          completedChapters: [...completedChaptersRef.current],
+          startPairIndex: completedChaptersRef.current.length,
+        });
+      }
+      alert(`AI 生成文章失敗：${e?.message ?? e}\n\n可按「繼續生成」從中斷處繼續。`);
     } finally {
       setIsGeneratingArticle(false);
     }
@@ -301,6 +373,119 @@ const App: React.FC = () => {
     if (!factCheckResult) return;
     try {
       await navigator.clipboard.writeText(factCheckResult);
+    } catch { alert("複製失敗"); }
+  };
+
+  const handleGenerateFAQ = async () => {
+    if (!editorRef.current) return;
+    const article = editorRef.current.innerText;
+    if (!article.trim()) return;
+    setIsGeneratingFAQ(true);
+    setFaqResult(null);
+    try {
+      const result = await SEOAIService.generateOptimizedFAQ(article, keywords);
+      setFaqResult(result);
+    } catch (e: any) {
+      alert(`FAQ 產生失敗：${e?.message ?? e}`);
+    } finally {
+      setIsGeneratingFAQ(false);
+    }
+  };
+
+  const insertFAQToEditor = () => {
+    if (!faqResult || !editorRef.current) return;
+    const faqHtml = faqResult.coreFaqs.map(f =>
+      `<h3>${f.question}</h3><p>${f.answer}</p>`
+    ).join('');
+    const html = editorRef.current.innerHTML;
+    const faqRegex = /(<h[12][^>]*>[^<]*FAQ[^<]*<\/h[12]>)/i;
+    if (faqRegex.test(html)) {
+      const match = html.match(faqRegex)!;
+      const idx = html.indexOf(match[0]);
+      const afterFaqHeading = idx + match[0].length;
+      const nextH2 = html.indexOf('<h2', afterFaqHeading);
+      const nextH1 = html.indexOf('<h1', afterFaqHeading);
+      let endIdx = html.length;
+      if (nextH2 !== -1) endIdx = Math.min(endIdx, nextH2);
+      if (nextH1 !== -1) endIdx = Math.min(endIdx, nextH1);
+      editorRef.current.innerHTML = html.substring(0, afterFaqHeading) + faqHtml + html.substring(endIdx);
+    } else {
+      editorRef.current.innerHTML += `<h2>FAQ</h2>${faqHtml}`;
+    }
+    updateStats();
+  };
+
+  const copyFAQToClipboard = async () => {
+    if (!faqResult) return;
+    const lines: string[] = [];
+    lines.push('## 核心 FAQ');
+    for (const f of faqResult.coreFaqs) {
+      lines.push(`**Q: ${f.question}**`);
+      lines.push(`A: ${f.answer}`);
+      lines.push('');
+    }
+    if (faqResult.extendedFaqs.length > 0) {
+      lines.push('## 延伸 FAQ');
+      for (const f of faqResult.extendedFaqs) {
+        lines.push(`**Q: ${f.question}**`);
+        lines.push(`A: ${f.answer}`);
+        lines.push('');
+      }
+    }
+    if (faqResult.infoGaps.length > 0) {
+      lines.push('## 資訊缺口建議');
+      for (const g of faqResult.infoGaps) {
+        lines.push(`- ${g}`);
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+    } catch { alert("複製失敗"); }
+  };
+
+  const handleAuditUX = async () => {
+    if (!editorRef.current) return;
+    const article = editorRef.current.innerText;
+    if (!article.trim()) return;
+    setIsAuditingUX(true);
+    setUxResult(null);
+    try {
+      const result = await SEOAIService.auditUXWriting(article, keywords);
+      setUxResult(result);
+    } catch (e: any) {
+      alert(`UX 寫作品質審計失敗：${e?.message ?? e}`);
+    } finally {
+      setIsAuditingUX(false);
+    }
+  };
+
+  const copyUXResultToClipboard = async () => {
+    if (!uxResult) return;
+    try {
+      await navigator.clipboard.writeText(uxResult);
+    } catch { alert("複製失敗"); }
+  };
+
+  const handleAuditContent = async () => {
+    if (!editorRef.current) return;
+    const article = editorRef.current.innerText;
+    if (!article.trim()) return;
+    setIsAuditingContent(true);
+    setContentResult(null);
+    try {
+      const result = await SEOAIService.auditContentAuthority(article, keywords);
+      setContentResult(result);
+    } catch (e: any) {
+      alert(`內容審計失敗：${e?.message ?? e}`);
+    } finally {
+      setIsAuditingContent(false);
+    }
+  };
+
+  const copyContentResultToClipboard = async () => {
+    if (!contentResult) return;
+    try {
+      await navigator.clipboard.writeText(contentResult);
     } catch { alert("複製失敗"); }
   };
 
@@ -348,10 +533,11 @@ const App: React.FC = () => {
               <h3 className="text-lg font-black mb-4 flex items-center gap-2"><i className="fas fa-stream text-amber-300"></i> 完整流程</h3>
               <div className="space-y-3 text-sm text-slate-300 font-medium">
                 <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">1</span> 分析搜尋意圖</div>
-                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">2</span> 選擇寫作模板</div>
-                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">3</span> 貼上 Google 相關問題，擷取子主題</div>
-                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">4</span> 生成 7W3H 大綱</div>
-                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">5</span> 進入寫作實驗室</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">2</span> SERP 模板分析（Frank 歸納法）</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">3</span> 選擇寫作模板</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">4</span> 貼上 Google 相關問題，擷取子主題</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">5</span> 生成 7W3H 大綱</div>
+                <div className="flex gap-3 items-center"><span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0">6</span> 進入寫作實驗室（含事實查核 / FAQ 產生 / UX 教練 / 內容審計）</div>
               </div>
             </div>
 
@@ -454,14 +640,188 @@ const App: React.FC = () => {
               <p className="text-amber-700 font-bold text-sm leading-relaxed">{intent?.ctaSuggestion}</p>
             </div>
 
-            <button onClick={goToTemplateSelection} className="w-full py-5 bg-amber-600 text-white rounded-2xl font-black text-lg shadow-2xl hover:bg-amber-500 transition-all flex items-center justify-center gap-3">
-              <i className="fas fa-arrow-right"></i> 下一步：選擇寫作模板
+          <button onClick={goToSerpTemplate} className="w-full py-5 bg-amber-600 text-white rounded-2xl font-black text-lg shadow-2xl hover:bg-amber-500 transition-all flex items-center justify-center gap-3">
+            <i className="fas fa-arrow-right"></i> 下一步：SERP 模板分析
             </button>
           </div>
         </div>
       </div>
     </div>
   );
+
+  const renderSerpTemplate = () => {
+    const meta = serpTemplateResult ? SERP_TEMPLATE_META[serpTemplateResult.serpTemplate] : null;
+    const isArticle = serpTemplateResult?.requiresArticle ?? false;
+    const filteredTemplates = serpTemplateResult?.suggestedWritingTemplates
+      ? Object.values(WRITING_TEMPLATES).filter(t => serpTemplateResult.suggestedWritingTemplates.includes(t.id))
+      : Object.values(WRITING_TEMPLATES);
+
+    return (
+      <div className="max-w-6xl mx-auto py-12 px-6 space-y-10">
+        <div className="bg-white rounded-[3rem] shadow-2xl overflow-hidden border border-slate-100">
+          <div className="bg-slate-900 p-10 text-white flex flex-col md:flex-row justify-between items-center gap-6">
+            <div className="space-y-1">
+              <h2 className="text-3xl font-black tracking-tight">SERP 模板分析：{keywords}</h2>
+              <p className="text-amber-400 font-bold text-sm">基於 Frank Chiu 搜尋意圖歸納法 — 6 大 SERP 模板</p>
+            </div>
+            <button onClick={() => setStep(AppStep.INTENT_RESULT)} className="bg-slate-800 text-slate-400 px-6 py-4 rounded-2xl font-black">回到意圖分析</button>
+          </div>
+
+          <div className="p-12 space-y-10">
+            {isAnalyzingSerpTemplate && (
+              <div className="bg-slate-50 p-12 rounded-[2.5rem] border border-slate-100 flex flex-col items-center justify-center gap-4">
+                <i className="fas fa-spinner fa-spin text-amber-500 text-4xl"></i>
+                <span className="text-slate-500 font-black text-lg">正在分析 SERP 模板類型...</span>
+                <span className="text-slate-400 text-sm">歸納法三維度：格式 → 內容 → 網站類型</span>
+              </div>
+            )}
+
+            {serpTemplateResult && !isAnalyzingSerpTemplate && (
+              <>
+                {/* SERP Template Result Card */}
+                <div className="bg-slate-50 p-10 rounded-[2.5rem] border border-slate-100">
+                  <div className="flex items-center gap-4 mb-8">
+                    {meta && (
+                      <span className={`w-14 h-14 rounded-2xl ${meta.color} text-white flex items-center justify-center shrink-0 text-2xl`}>
+                        <i className={`fas ${meta.icon}`}></i>
+                      </span>
+                    )}
+                    <div>
+                      <h3 className="text-2xl font-black text-slate-900">{serpTemplateResult.serpTemplate}</h3>
+                      <p className="text-slate-400 text-sm">{meta?.desc}</p>
+                    </div>
+                    <span className="ml-auto px-4 py-2 rounded-xl bg-amber-100 text-amber-700 text-sm font-black">信心度 {serpTemplateResult.confidence}/10</span>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-8">
+                    <div className="space-y-6">
+                      <div>
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">預期 SERP 特徵</h4>
+                        <ul className="space-y-2">
+                          {serpTemplateResult.serpFeatures.map((f, i) => (
+                            <li key={i} className="flex gap-2 text-sm text-slate-600"><i className="fas fa-search text-slate-300 mt-1 text-xs"></i> {f}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">內容策略建議</h4>
+                        <p className="text-sm text-slate-600 leading-relaxed">{serpTemplateResult.contentStrategy}</p>
+                      </div>
+                    </div>
+
+                    {/* Strike Zone */}
+                    <div className="space-y-4">
+                      <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><i className="fas fa-bullseye text-amber-500"></i> 好球帶 (Strike Zone)</h4>
+                      <div className="space-y-3">
+                        <div className="bg-green-50 p-4 rounded-xl border border-green-100">
+                          <p className="text-green-800 font-black text-xs mb-2 flex items-center gap-1"><i className="fas fa-check-circle"></i> 必須涵蓋</p>
+                          <ul className="space-y-1">
+                            {serpTemplateResult.strikeZone.must.map((m, i) => (
+                              <li key={i} className="text-xs text-green-700 flex gap-2"><i className="fas fa-arrow-right text-green-300 mt-0.5"></i> {m}</li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div className="bg-amber-50 p-4 rounded-xl border border-amber-100">
+                          <p className="text-amber-800 font-black text-xs mb-2 flex items-center gap-1"><i className="fas fa-plus-circle"></i> 加分項目</p>
+                          <ul className="space-y-1">
+                            {serpTemplateResult.strikeZone.nice.map((n, i) => (
+                              <li key={i} className="text-xs text-amber-700 flex gap-2"><i className="fas fa-arrow-right text-amber-300 mt-0.5"></i> {n}</li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div className="bg-red-50 p-4 rounded-xl border border-red-100">
+                          <p className="text-red-800 font-black text-xs mb-2 flex items-center gap-1"><i className="fas fa-times-circle"></i> 避免涵蓋</p>
+                          <ul className="space-y-1">
+                            {serpTemplateResult.strikeZone.avoid.map((a, i) => (
+                              <li key={i} className="text-xs text-red-600 flex gap-2"><i className="fas fa-ban text-red-300 mt-0.5"></i> {a}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                      <div className="bg-slate-800 text-white p-4 rounded-xl">
+                        <p className="text-xs font-black text-amber-400 mb-1">匹配度建議</p>
+                        <p className="text-sm leading-relaxed">{serpTemplateResult.matchAdvice}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Non-article strategy card */}
+                {!isArticle && (
+                  <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white p-10 rounded-[2.5rem] space-y-6">
+                    <div className="flex items-center gap-3">
+                      <i className="fas fa-info-circle text-amber-400 text-xl"></i>
+                      <h3 className="font-black text-lg">此關鍵字主要需要的不是文章，而是「{serpTemplateResult.serpTemplate}」對應的頁面類型</h3>
+                    </div>
+                    <p className="text-slate-300 text-sm leading-relaxed">{serpTemplateResult.contentStrategy}</p>
+                    <div className="flex flex-wrap gap-4 pt-2">
+                      <button onClick={goToTemplateSelection} className="px-8 py-4 bg-amber-600 rounded-2xl font-black shadow-xl hover:bg-amber-500 transition-all flex items-center gap-2">
+                        <i className="fas fa-pen-nib"></i> 仍要寫文章（選擇 A-E 模板）
+                      </button>
+                      <button onClick={() => setStep(AppStep.QUESTIONS_INPUT)} className="px-8 py-4 bg-white/10 rounded-2xl font-black hover:bg-white/20 transition-all flex items-center gap-2 border border-white/20">
+                        <i className="fas fa-arrow-right"></i> 跳到 Google 相關問題
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Article type: show recommended A-E templates */}
+                {isArticle && filteredTemplates.length > 0 && (
+                  <div className="space-y-6">
+                    <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><i className="fas fa-magic text-amber-500"></i> 推薦的寫作模板</h3>
+                    <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
+                      {filteredTemplates.map((tpl) => (
+                        <div
+                          key={tpl.id}
+                          onClick={() => setSelectedTemplate(tpl.id)}
+                          className={`p-8 rounded-[2.5rem] border-2 cursor-pointer transition-all hover:shadow-lg ${
+                            selectedTemplate === tpl.id
+                              ? 'border-amber-400 bg-amber-50/50 shadow-xl ring-2 ring-amber-200'
+                              : 'border-slate-100 bg-white hover:border-amber-200'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 mb-4">
+                            <span className={`w-10 h-10 rounded-xl ${TEMPLATE_COLORS[tpl.id]} text-white flex items-center justify-center shrink-0`}>
+                              <i className={`fas ${TEMPLATE_ICONS[tpl.id]}`}></i>
+                            </span>
+                            <div>
+                              <h4 className="font-black text-slate-800">{tpl.name}</h4>
+                              <p className="text-xs text-slate-400">{tpl.description}</p>
+                            </div>
+                          </div>
+                          <div className="space-y-2 mt-4">
+                            {tpl.outline.map((item, i) => (
+                              <div key={i} className="flex gap-2 items-start text-xs">
+                                <span className="w-5 h-5 rounded bg-slate-100 text-slate-500 flex items-center justify-center shrink-0 text-[10px] font-black">{i + 1}</span>
+                                <span className="text-slate-600">{item}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-4 pt-2">
+                      <button
+                        onClick={() => { if (selectedTemplate) confirmTemplateAndProceed(); }}
+                        disabled={!selectedTemplate}
+                        className="px-16 py-5 bg-amber-600 text-white rounded-2xl font-black text-lg shadow-2xl hover:bg-amber-500 transition-all disabled:bg-slate-200 disabled:text-slate-400 flex items-center gap-3"
+                      >
+                        <i className="fas fa-arrow-right"></i>
+                        {selectedTemplate ? `使用模板 ${selectedTemplate}，下一步` : '請先選擇一個寫作模板'}
+                      </button>
+                      <button onClick={goToTemplateSelection} className="px-8 py-5 bg-slate-100 text-slate-500 rounded-2xl font-black hover:bg-slate-200 transition-all flex items-center gap-2">
+                        <i className="fas fa-th-large"></i> 查看全部 5 種模板
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const TEMPLATE_ICONS: Record<WritingTemplateId, string> = {
     A: 'fa-lightbulb',
@@ -716,12 +1076,43 @@ const App: React.FC = () => {
             <button onClick={copyOutlineToClipboard} disabled={!outline} className="bg-emerald-600 text-white px-6 py-4 rounded-2xl font-black hover:bg-emerald-500 transition-all disabled:opacity-50">
               <i className={`fas ${outlineCopied ? 'fa-check' : 'fa-clipboard'} mr-2`}></i>{outlineCopied ? '已複製 ✓' : '複製大綱'}
             </button>
-            <button onClick={handleGenerateArticle} disabled={isGeneratingArticle || !outline} className="bg-violet-600 text-white px-6 py-4 rounded-2xl font-black hover:bg-violet-500 transition-all disabled:opacity-50">
-              <i className={`fas ${isGeneratingArticle ? 'fa-spinner fa-spin' : 'fa-robot'} mr-2`}></i>{isGeneratingArticle ? 'AI 生成中...' : 'AI 生成文章'}
-            </button>
+            {generationCheckpoint ? (
+              <button onClick={() => handleGenerateArticle(true)} disabled={isGeneratingArticle} className="bg-orange-500 text-white px-6 py-4 rounded-2xl font-black hover:bg-orange-400 transition-all disabled:opacity-50">
+                <i className="fas fa-forward mr-2"></i>繼續生成（從第 {generationCheckpoint.startPairIndex + 1} 章）
+              </button>
+            ) : (
+              <button onClick={() => handleGenerateArticle(false)} disabled={isGeneratingArticle || !outline} className="bg-violet-600 text-white px-6 py-4 rounded-2xl font-black hover:bg-violet-500 transition-all disabled:opacity-50">
+                <i className={`fas ${isGeneratingArticle ? 'fa-spinner fa-spin' : 'fa-robot'} mr-2`}></i>{generationProgress ? generationProgress.statusMessage : 'AI 生成文章'}
+              </button>
+            )}
             <button onClick={() => setStep(AppStep.EDITOR)} className="bg-amber-500 text-white px-10 py-4 rounded-2xl font-black hover:bg-amber-400 shadow-xl transition-all">進入寫作實驗室</button>
           </div>
         </div>
+
+        {isGeneratingArticle && generationProgress && (
+          <div className="bg-violet-50 border-b border-violet-200 px-12 py-6">
+            <div className="flex items-center gap-4 mb-3">
+              <i className="fas fa-spinner fa-spin text-violet-600 text-xl"></i>
+              <span className="text-violet-800 font-bold text-sm">{generationProgress.statusMessage}</span>
+            </div>
+            <div className="h-2 bg-violet-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-violet-600 rounded-full transition-all duration-500"
+                style={{
+                  width: generationProgress.phase === 'writing'
+                    ? `${(generationProgress.currentChapter / generationProgress.totalChapters) * 70}%`
+                    : generationProgress.phase === 'polishing' ? '85%'
+                    : generationProgress.phase === 'seo' ? '95%'
+                    : '100%'
+                }}
+              ></div>
+            </div>
+            <div className="flex justify-between mt-2 text-[10px] text-violet-500 font-medium">
+              <span>{generationProgress.phase === 'writing' ? `逐章撰寫 ${generationProgress.currentChapter}/${generationProgress.totalChapters}` : generationProgress.phase === 'polishing' ? '總編審稿' : generationProgress.phase === 'seo' ? 'SEO 交付物' : '完成'}</span>
+              <span>三段式寫作流程</span>
+            </div>
+          </div>
+        )}
 
         <div className="p-12 grid lg:grid-cols-3 gap-12">
           <div className="lg:col-span-2 space-y-8">
@@ -730,7 +1121,7 @@ const App: React.FC = () => {
               <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-lg text-xs font-black">建議字數：{outline?.targetWordCount}</span>
             </div>
             {outline?.structure.map((node, i) => {
-              const sectionKey = detectSection(node.title);
+              const sectionKey = detectSection(node.title, node.section);
               const sectionMeta = sectionKey ? SECTION_LABELS[sectionKey] : null;
 
               return (
@@ -790,14 +1181,6 @@ const App: React.FC = () => {
 
   const renderEditor = () => (
     <div className="max-w-7xl mx-auto py-12 px-6">
-      <style>{`
-        .editor-container { min-height: 800px; padding: 4rem; outline: none; }
-        .editor-container[contenteditable]:empty::before { content: attr(data-placeholder); color: #94a3b8; pointer-events: none; }
-        .toolbar-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 6px; transition: all 0.15s; color: #475569; }
-        .toolbar-btn:hover { background: #f1f5f9; color: #0f172a; }
-        .toolbar-group { display: flex; align-items: center; gap: 4px; padding: 0 12px; border-right: 1px solid #e2e8f0; }
-        .toolbar-group:last-child { border-right: none; }
-      `}</style>
       <div className="grid lg:grid-cols-4 gap-8">
         <div className="lg:col-span-3 space-y-6">
           <div className="bg-white rounded-[3rem] shadow-2xl border border-slate-100 overflow-hidden flex flex-col">
@@ -822,6 +1205,18 @@ const App: React.FC = () => {
                 <button onClick={handleFactCheck} disabled={isFactChecking} className="px-6 py-2 bg-red-600 text-white rounded-xl text-xs font-black shadow-lg hover:bg-red-700 disabled:opacity-50">
                   <i className={`fas ${isFactChecking ? 'fa-spinner fa-spin' : 'fa-shield-alt'} mr-2`}></i>
                   {isFactChecking ? '查核中...' : '事實查核'}
+                </button>
+                <button onClick={handleGenerateFAQ} disabled={isGeneratingFAQ} className="px-6 py-2 bg-purple-600 text-white rounded-xl text-xs font-black shadow-lg hover:bg-purple-700 disabled:opacity-50">
+                  <i className={`fas ${isGeneratingFAQ ? 'fa-spinner fa-spin' : 'fa-question-circle'} mr-2`}></i>
+                  {isGeneratingFAQ ? '產生中...' : 'FAQ 產生器'}
+                </button>
+                <button onClick={handleAuditUX} disabled={isAuditingUX} className="px-6 py-2 bg-blue-600 text-white rounded-xl text-xs font-black shadow-lg hover:bg-blue-700 disabled:opacity-50">
+                  <i className={`fas ${isAuditingUX ? 'fa-spinner fa-spin' : 'fa-pen-nib'} mr-2`}></i>
+                  {isAuditingUX ? '審計中...' : 'UX 寫作教練'}
+                </button>
+                <button onClick={handleAuditContent} disabled={isAuditingContent} className="px-6 py-2 bg-rose-600 text-white rounded-xl text-xs font-black shadow-lg hover:bg-rose-700 disabled:opacity-50">
+                  <i className={`fas ${isAuditingContent ? 'fa-spinner fa-spin' : 'fa-microscope'} mr-2`}></i>
+                  {isAuditingContent ? '審計中...' : '內容審計師'}
                 </button>
                 <button onClick={runDraftAnalysis} disabled={isAnalyzingDraft} className="px-6 py-2 bg-amber-600 text-white rounded-xl text-xs font-black shadow-lg hover:bg-amber-700 disabled:opacity-50">
                   <i className={`fas ${isAnalyzingDraft ? 'fa-spinner fa-spin' : 'fa-check-double'} mr-2`}></i>
@@ -860,10 +1255,14 @@ const App: React.FC = () => {
 
           {analysis && (
             <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-slate-100 space-y-6">
-              <div className="text-center">
+              <div className="text-center cursor-pointer" onClick={() => toggleCollapse('analysis')}>
                 <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">基礎契合得分</p>
-                <h4 className="text-6xl font-black text-slate-900 my-2">{analysis.score}</h4>
+                <div className="flex items-center justify-center gap-3">
+                  <h4 className="text-6xl font-black text-slate-900 my-2">{analysis.score}</h4>
+                  <i className={`fas fa-chevron-${collapsedSections.analysis ? 'down' : 'up'} text-slate-300 text-xs`}></i>
+                </div>
               </div>
+              {!collapsedSections.analysis && (
               <div className="space-y-5">
                 <div>
                   <h5 className="text-[11px] font-black text-slate-600 uppercase mb-2 border-b pb-1">缺少的基本元素</h5>
@@ -873,11 +1272,12 @@ const App: React.FC = () => {
                 </div>
                 <div>
                   <h5 className="text-[11px] font-black text-slate-600 uppercase mb-2 border-b pb-1">優化建議</h5>
-                  <ul className="text-xs space-y-3">
-                    {analysis.suggestions.slice(0, 3).map((s, i) => <li key={i} className="bg-amber-50 p-3 rounded-xl leading-relaxed">{s}</li>)}
+                  <ul className="text-xs space-y-3 max-h-[400px] overflow-y-auto">
+                    {analysis.suggestions.map((s, i) => <li key={i} className="bg-amber-50 p-3 rounded-xl leading-relaxed">{s}</li>)}
                   </ul>
                 </div>
               </div>
+              )}
             </div>
           )}
 
@@ -918,17 +1318,208 @@ const App: React.FC = () => {
 
           {factCheckResult && !isFactChecking && (
             <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-red-100 space-y-4">
-              <div className="flex items-center justify-between border-b pb-3">
+              <div className="flex items-center justify-between border-b pb-3 cursor-pointer" onClick={() => toggleCollapse('factCheck')}>
                 <h4 className="font-black text-red-800 text-sm flex items-center gap-2">
                   <i className="fas fa-shield-alt text-red-500"></i> 事實查核報告
+                  <i className={`fas fa-chevron-${collapsedSections.factCheck ? 'down' : 'up'} text-slate-300 text-[10px]`}></i>
                 </h4>
-                <button onClick={copyFactCheckToClipboard} className="px-4 py-1.5 bg-red-600 text-white rounded-lg text-[10px] font-black hover:bg-red-500">
-                  <i className="fas fa-clipboard mr-1"></i>複製報告
-                </button>
+                <div onClick={e => e.stopPropagation()}>
+                  <button onClick={copyFactCheckToClipboard} className="px-4 py-1.5 bg-red-600 text-white rounded-lg text-[10px] font-black hover:bg-red-500">
+                    <i className="fas fa-clipboard mr-1"></i>複製報告
+                  </button>
+                </div>
               </div>
-              <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-[500px] overflow-y-auto">
+              {!collapsedSections.factCheck && (
+              <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-[800px] overflow-y-auto">
                 {factCheckResult}
               </div>
+              )}
+            </div>
+          )}
+
+          {isGeneratingFAQ && (
+            <div className="bg-purple-50 p-8 rounded-[2.5rem] shadow-xl border-2 border-purple-200 space-y-4">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-spinner fa-spin text-purple-500 text-xl"></i>
+                <h4 className="font-black text-purple-800">FAQ 產生中...</h4>
+              </div>
+              <p className="text-xs text-purple-600">AI 正在分析文章，產生最佳化 FAQ，請稍候。</p>
+            </div>
+          )}
+
+          {faqResult && !isGeneratingFAQ && (
+            <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-purple-100 space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 cursor-pointer" onClick={() => toggleCollapse('faq')}>
+                <h4 className="font-black text-purple-800 text-sm flex items-center gap-2">
+                  <i className="fas fa-question-circle text-purple-500"></i> FAQ 產生器結果
+                  <i className={`fas fa-chevron-${collapsedSections.faq ? 'down' : 'up'} text-slate-300 text-[10px]`}></i>
+                </h4>
+                <div className="flex gap-2" onClick={e => e.stopPropagation()}>
+                  <button onClick={copyFAQToClipboard} className="px-3 py-1.5 bg-purple-600 text-white rounded-lg text-[10px] font-black hover:bg-purple-500">
+                    <i className="fas fa-clipboard mr-1"></i>複製
+                  </button>
+                  <button onClick={insertFAQToEditor} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black hover:bg-emerald-500">
+                    <i className="fas fa-plus mr-1"></i>插入文章
+                  </button>
+                </div>
+              </div>
+              {!collapsedSections.faq && (
+              <>
+              <div className="space-y-3 max-h-[400px] overflow-y-auto">
+                <p className="text-[10px] font-black text-purple-600 uppercase">核心 FAQ（{faqResult.coreFaqs.length} 題）</p>
+                {faqResult.coreFaqs.map((f, i) => (
+                  <div key={i} className="bg-purple-50 p-3 rounded-xl border border-purple-100">
+                    <p className="text-xs font-black text-slate-800">Q: {f.question}</p>
+                    <p className="text-[11px] text-slate-600 mt-1">{f.answer}</p>
+                  </div>
+                ))}
+                {faqResult.extendedFaqs.length > 0 && (
+                  <>
+                    <button onClick={() => setShowExtendedFAQ(!showExtendedFAQ)} className="text-[10px] font-black text-purple-600 hover:text-purple-800 flex items-center gap-1">
+                      <i className={`fas fa-chevron-${showExtendedFAQ ? 'up' : 'down'} text-[8px]`}></i>
+                      {showExtendedFAQ ? '收合' : '展開'}延伸 FAQ（{faqResult.extendedFaqs.length} 題）
+                    </button>
+                    {showExtendedFAQ && faqResult.extendedFaqs.map((f, i) => (
+                      <div key={i} className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                        <p className="text-xs font-black text-slate-800">Q: {f.question}</p>
+                        <p className="text-[11px] text-slate-600 mt-1">{f.answer}</p>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+              {faqResult.infoGaps.length > 0 && (
+                <div className="border-t pt-3 space-y-2">
+                  <p className="text-[10px] font-black text-amber-600 uppercase flex items-center gap-1"><i className="fas fa-exclamation-triangle"></i> 資訊缺口建議</p>
+                  <ul className="space-y-1">
+                    {faqResult.infoGaps.map((g, i) => (
+                      <li key={i} className="text-[11px] text-amber-700 flex gap-2"><span className="text-amber-400 mt-0.5">•</span> {g}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              </>
+              )}
+            </div>
+          )}
+
+          {isAuditingUX && (
+            <div className="bg-blue-50 p-8 rounded-[2.5rem] shadow-xl border-2 border-blue-200 space-y-4">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-spinner fa-spin text-blue-500 text-xl"></i>
+                <h4 className="font-black text-blue-800">UX 寫作審計中...</h4>
+              </div>
+              <p className="text-xs text-blue-600">AI 正在掃描可讀性與流暢度，請稍候。</p>
+            </div>
+          )}
+
+          {uxResult && !isAuditingUX && (
+            <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-blue-100 space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 cursor-pointer" onClick={() => toggleCollapse('ux')}>
+                <h4 className="font-black text-blue-800 text-sm flex items-center gap-2">
+                  <i className="fas fa-pen-nib text-blue-500"></i> UX 寫作教練報告
+                  <i className={`fas fa-chevron-${collapsedSections.ux ? 'down' : 'up'} text-slate-300 text-[10px]`}></i>
+                </h4>
+                <div onClick={e => e.stopPropagation()}>
+                  <button onClick={copyUXResultToClipboard} className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-[10px] font-black hover:bg-blue-500">
+                    <i className="fas fa-clipboard mr-1"></i>複製報告
+                  </button>
+                </div>
+              </div>
+              {!collapsedSections.ux && (
+              <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-[800px] overflow-y-auto">
+                {uxResult}
+              </div>
+              )}
+            </div>
+          )}
+
+          {isAuditingContent && (
+            <div className="bg-rose-50 p-8 rounded-[2.5rem] shadow-xl border-2 border-rose-200 space-y-4">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-spinner fa-spin text-rose-500 text-xl"></i>
+                <h4 className="font-black text-rose-800">3X 內容審計中...</h4>
+              </div>
+              <p className="text-xs text-rose-600">AI 正在進行深度/廣度/信任度壓力測試，請稍候。</p>
+            </div>
+          )}
+
+          {contentResult && !isAuditingContent && (
+            <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-rose-100 space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 cursor-pointer" onClick={() => toggleCollapse('content')}>
+                <h4 className="font-black text-rose-800 text-sm flex items-center gap-2">
+                  <i className="fas fa-microscope text-rose-500"></i> 內容審計師報告
+                  <i className={`fas fa-chevron-${collapsedSections.content ? 'down' : 'up'} text-slate-300 text-[10px]`}></i>
+                </h4>
+                <div onClick={e => e.stopPropagation()}>
+                  <button onClick={copyContentResultToClipboard} className="px-4 py-1.5 bg-rose-600 text-white rounded-lg text-[10px] font-black hover:bg-rose-500">
+                    <i className="fas fa-clipboard mr-1"></i>複製報告
+                  </button>
+                </div>
+              </div>
+              {!collapsedSections.content && (
+              <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-[800px] overflow-y-auto">
+                {contentResult}
+              </div>
+              )}
+            </div>
+          )}
+
+          {seoMetadata && (
+            <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border border-emerald-200 space-y-4">
+              <h4 className="font-black text-emerald-800 text-sm flex items-center gap-2 border-b pb-3 cursor-pointer" onClick={() => toggleCollapse('seo')}>
+                <i className="fas fa-search-dollar text-emerald-500"></i> SEO 交付物
+                <i className={`fas fa-chevron-${collapsedSections.seo ? 'down' : 'up'} text-slate-300 text-[10px]`}></i>
+              </h4>
+              {!collapsedSections.seo && (
+              <div className="space-y-3">
+                <div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Title 標題</p>
+                  {seoMetadata.titles.map((t, i) => (
+                    <p key={i} className="text-xs text-slate-700 bg-slate-50 p-2 rounded-lg mb-1">{t}</p>
+                  ))}
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Meta Description</p>
+                  {seoMetadata.metaDescriptions.map((d, i) => (
+                    <p key={i} className="text-xs text-slate-700 bg-slate-50 p-2 rounded-lg mb-1">{d}</p>
+                  ))}
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase mb-1">URL Slug</p>
+                  <p className="text-xs text-emerald-700 font-mono bg-emerald-50 p-2 rounded-lg">{seoMetadata.urlSlug}</p>
+                </div>
+                {seoMetadata.faqSchemaItems.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">FAQ Schema (JSON-LD)</p>
+                    <pre className="text-[10px] text-slate-600 bg-slate-50 p-3 rounded-lg overflow-x-auto max-h-[200px] overflow-y-auto whitespace-pre-wrap">{JSON.stringify({
+                      "@context": "https://schema.org",
+                      "@type": "FAQPage",
+                      "mainEntity": seoMetadata.faqSchemaItems.map(item => ({
+                        "@type": "Question",
+                        "name": item.question,
+                        "acceptedAnswer": {
+                          "@type": "Answer",
+                          "text": item.answer
+                        }
+                      }))
+                    }, null, 2)}</pre>
+                  </div>
+                )}
+                {seoMetadata.checklist.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">上線前自檢清單</p>
+                    <ul className="space-y-1">
+                      {seoMetadata.checklist.map((item, i) => (
+                        <li key={i} className="text-[11px] text-slate-600 flex gap-2 items-start">
+                          <span className="text-emerald-500 mt-0.5">☐</span> {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              )}
             </div>
           )}
         </div>
@@ -942,6 +1533,7 @@ const App: React.FC = () => {
         {step === AppStep.SETUP && renderSetup()}
         {(step === AppStep.INTENT_ANALYZING || step === AppStep.ANALYZING) && renderLoading()}
         {step === AppStep.INTENT_RESULT && renderIntentResult()}
+        {step === AppStep.SERP_TEMPLATE && renderSerpTemplate()}
         {step === AppStep.TEMPLATE_SELECTION && renderTemplateSelection()}
         {step === AppStep.QUESTIONS_INPUT && renderQuestionsInput()}
         {step === AppStep.OUTLINE_READY && renderOutline()}
